@@ -190,8 +190,8 @@ class MotionController(object):
                 v_des = self.force_impedence_ctrl(f_err) # force control
                 tip_next_ipad.p[2] = tip_now_ipad.p[2] + v_des * self.TIMESTEP # force impedence control 
             
-            # check if force achieved
-            if np.fabs(fz_des-fz_now)<self.params['force_epsilon']:
+            # check if force achieved (use tighter settling threshold, separate from touch threshold)
+            if np.fabs(fz_des-fz_now)<self.params.get('force_settle_epsilon', 0.3) and touch_t is not None:
                 if set_time is None:
                     set_time = time.time()
                 if (time.time()-set_time)>self.params['settling_time']:
@@ -424,6 +424,11 @@ class MotionController(object):
     
     def jog_joint_position_cmd(self,q,v=0.4,wait_time=0):
 
+        # Drain stale EGM packets so q_start reflects the true current position.
+        # Without this, a backlog of old UDP frames causes the first waypoint to
+        # jump from a stale position, producing the startup jerk.
+        for _ in range(20):
+            self.read_position()
         q_start=self.read_position()
         # total_time=np.linalg.norm(q-q_start)/v
 

@@ -16,7 +16,7 @@ FRAME_DELAY       = 0.02
 OUTPUT_FILENAME   = "test"
 Z_MIN_THRESHOLD   = 40
 X_MIN             = -5
-X_MAX             = 5     # scanner FOV only reaches ~17.7mm in physical frame
+X_MAX             = 10    # extended to capture right plateau after scanner move
 NUM_BINS          = 500
 
 PEN_TO_LASER_OFFSET_MM = 0.5 * 25.4   # 12.7 mm
@@ -34,7 +34,12 @@ SAVGOL_POLYORDER     = 3
 LOG_RAW_FRAMES       = True
 
 # --- Z calibration reference ---
-SHEET_THICKNESS_IN   = 0.003          # inches — sheet placed on top as step reference
+# Step-edge method: place a second 0.003" sheet on the flat base, scan the edge.
+# Z_SCALE = SHEET_THICKNESS_MM / measured_step_su
+# Last measured: step = 0.2712 su → Z_SCALE = 0.0762 / 0.2712 = 0.2810 mm/su
+# Verified 2026-06-26: perpendicular-orientation rescan of 16 channels (Set 1 & 2,
+# 3.25–5.0 N) gave depths of 0.14–0.26 mm, consistent with Z_SCALE = 0.2810.
+SHEET_THICKNESS_IN   = 0.0038 * 8     # inches — 8 sheets of 0.0038" paper stacked
 SHEET_THICKNESS_MM   = SHEET_THICKNESS_IN * 25.4   # 0.0762 mm
 
 # --- Plateau windows for step measurement (physical frame, mm from pen tip) ---
@@ -298,7 +303,7 @@ if len(x_plot) > 0:
         zscale = SHEET_THICKNESS_MM / step_f
         print(f"Z scale factor         : {zscale:.4f} mm / scanner unit")
         print(f"  -> real_mm = scanner_z x {zscale:.4f}")
-        print(f"  -> Previous channel depth 0.699 su x {zscale:.4f} = {0.699 * zscale:.4f} mm real")
+        print(f"  -> Update Z_SCALE in mti_snapshot.py if this differs from 0.2810")
     print(f"-----------------------------\n")
 
     png_path = os.path.join(DOWNLOADS_FOLDER, f"{OUTPUT_FILENAME}.png")

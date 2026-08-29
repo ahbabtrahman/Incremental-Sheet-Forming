@@ -1,6 +1,7 @@
 import numpy as np
 import time
 import os
+import csv
 from collections import deque
 from matplotlib import pyplot as plt
 from scipy.signal import savgol_filter
@@ -13,7 +14,7 @@ MTI_SERVICE_URL = "rr+tcp://localhost:60830/?service=MTI2D"
 EXPOSURE_TIME = "25"           # MTI exposure time in ms
 NUM_FRAMES = 50                # rolling window size (frames stacked for median average)
 FRAME_DELAY = 0.02             # seconds between frames (20 ms)
-OUTPUT_FILENAME = "test"       # output files: test.png, test_raw_frames.npy
+OUTPUT_FILENAME = time.strftime("scan_%Y%m%d_%H%M%S")  # e.g. scan_20260626_143022
 Z_MIN_THRESHOLD = 40           # discard points with Z < this (hardware noise floor)
 X_MIN = -5                     # raw scanner ROI lower bound (mm, scanner frame)
 X_MAX = 5                     # scanner FOV ends ~17.7mm in physical frame
@@ -60,7 +61,7 @@ CHANNEL_X_HI   = 3.5    # mm in scanner cross-section frame
 # Frames whose detrended Z std exceeds this threshold are corrupted (e.g. a
 # movement jolt or laser dropout) and are discarded before entering the buffer.
 # From data: good frames have std ~0.028 mm; Frame 9 had std = 2.04 mm.
-FRAME_QUALITY_STD_THRESHOLD = 0.50   # mm — raised: channel dip in full frame raises residuals above 0.15
+FRAME_QUALITY_STD_THRESHOLD = 1.50   # mm — raised for perpendicular orientation: channel dip raises residuals to ~0.575mm; genuine corruption (jolts) is >2mm
 
 # --- 6. Savitzky-Golay smoothing ---
 SAVGOL_WINDOW  = 15            # must be odd and > SAVGOL_POLYORDER
@@ -77,8 +78,9 @@ NOISE_FLOOR_MULTIPLIER = 2.0   # detection threshold = 2 × measured noise floor
 # Derived from step-edge scan of a 0.003" (0.0762 mm) aluminum sheet placed on
 # the base surface. Plateau mean difference = 0.2712 scanner units.
 # Z_SCALE = 0.0762 / 0.2712 = 0.2810 mm / scanner unit.
-# ⚠️ PIN: Re-verify Z calibration at end of project with a precision shim.
-#         Current estimate has uncertainty due to caliper resolution on 0.003" sheet.
+# Verified 2026-06-26: perpendicular-orientation rescan of 16 channels (Set 1 & 2,
+# 3.0–5.0 N) gave clean depths of 0.14–0.26 mm, consistent with this scale.
+# ⚠️ PIN: Re-verify with a precision gauge block before final analysis.
 Z_SCALE = 0.2810   # mm per scanner unit
 
 # --- 8. Raw frame logging ---
@@ -311,7 +313,7 @@ depth_text = ax.text(
 
 ax.set_title(PLOT_TITLE, fontsize=13)
 ax.set_xlabel("Scanner cross-section position (mm)  [X=0 = pen tip, channel at ~1.3 mm]", fontsize=10)
-ax.set_ylabel("Z (mm)", fontsize=11)
+ax.set_ylabel("Depth (mm)", fontsize=11)
 ax.set_xlim(X_BIN_MIN, X_BIN_MAX)
 ax.grid(True, linestyle='--', alpha=0.5)
 ax.legend(loc='upper right', fontsize=9)
@@ -334,6 +336,7 @@ bin_edges   = np.linspace(X_BIN_MIN, X_BIN_MAX, NUM_BINS + 1)
 bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 frame_buffer   = deque(maxlen=NUM_FRAMES)
 raw_frame_log  = []                          # (8) raw frames before any processing
+depth_log      = []                          # per-frame: [timestamp, depth_mm, width_mm, buffer_%]
 x_plot, z_plot = np.array([]), np.array([])
 
 while not stop_requested and plt.fignum_exists(fig.number):
@@ -437,11 +440,19 @@ while not stop_requested and plt.fignum_exists(fig.number):
     depth_su, width = extract_depth_width(x_plot, z_plot, CHANNEL_X_LO, CHANNEL_X_HI)
     depth = depth_su * Z_SCALE if not np.isnan(depth_su) else np.nan   # convert to real mm
 
-    # Update plot
-    line.set_data(x_plot, z_plot)
-    # Clip Y axis to data percentile range to prevent edge spikes from blowing out the scale
-    if len(z_plot) > 10:
-        z_lo, z_hi = np.nanpercentile(z_plot, [2, 98])
+    # Log depth/width for this frame
+    depth_log.append([
+        time.time(),
+        float(depth) if not np.isnan(depth) else np.nan,
+        float(width) if not np.isnan(width) else np.nan,
+        int(100 * len(frame_buffer) / NUM_FRAMES)
+    ])
+
+    # Update plot — convert to mm so Y axis matches depth readout
+    z_plot_mm = z_plot * Z_SCALE
+    line.set_data(x_plot, z_plot_mm)
+    if len(z_plot_mm) > 10:
+        z_lo, z_hi = np.nanpercentile(z_plot_mm, [2, 98])
         margin = max(abs(z_hi - z_lo) * 0.4, 0.05)
         ax.set_ylim(z_lo - margin, z_hi + margin)
     ax.set_xlim(X_BIN_MIN, X_BIN_MAX)
@@ -472,6 +483,28 @@ if len(x_plot) > 0:
     print(f"Profile plot saved to: {png_path}")
 
 plt.close(fig)
+
+# ---------------------------------------------------------------
+# SAVE PROFILE CSV  (same format as line test reference files)
+# Row 0: X positions (mm, scanner cross-section frame)
+# Row 1: Z values (mm, detrended — channel dips negative, flat surface ≈ 0)
+# ---------------------------------------------------------------
+if len(x_plot) > 0:
+    profile_csv_path = os.path.join(DOWNLOADS_FOLDER, f"{OUTPUT_FILENAME}_profile.csv")
+    z_mm = z_plot * Z_SCALE   # convert scanner units → mm
+    np.savetxt(profile_csv_path, np.array([x_plot, z_mm]), delimiter=' ')
+    print(f"Profile CSV saved to: {profile_csv_path}")
+
+# ---------------------------------------------------------------
+# SAVE PER-FRAME DEPTH LOG CSV
+# ---------------------------------------------------------------
+if len(depth_log) > 0:
+    log_csv_path = os.path.join(DOWNLOADS_FOLDER, f"{OUTPUT_FILENAME}_depth_log.csv")
+    with open(log_csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['timestamp', 'depth_mm', 'width_mm', 'buffer_pct'])
+        writer.writerows(depth_log)
+    print(f"Depth log ({len(depth_log)} frames) saved to: {log_csv_path}")
 
 # ---------------------------------------------------------------
 # (8) SAVE RAW FRAME LOG
