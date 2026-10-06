@@ -15,7 +15,6 @@ from robot_def import *
 
 sys.path.append("toolbox")
 sys.path.append("robot_motion")
-sys.path.append("/home/fusing-ubuntu/Sheet-Metal-Deformation-Research/SM MV/")
 
 from sklearn.decomposition import PCA
 from rpi_ati_net_ft import *
