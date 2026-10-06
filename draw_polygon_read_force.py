@@ -1,24 +1,33 @@
 import sys
 import time
+import glob
 import matplotlib.pyplot as plt
 import numpy as np
 import abb_motion_program_exec as abb
 from general_robotics_toolbox import *
 from general_robotics_toolbox import robotraconteur as rr_rox
-sys.path.append("toolbox")
-sys.path.append("robot_motion")
 from RobotMotionController import *
 from RobotRaconteur.Client import *
 from robot_def import *
 from utils import *
+from rpi_ati_net_ft import *
+from robot_def import *
+
+sys.path.append("toolbox")
+sys.path.append("robot_motion")
+sys.path.append("/home/fusing-ubuntu/Sheet-Metal-Deformation-Research/SM MV/")
+
+from sklearn.decomposition import PCA
+from rpi_ati_net_ft import *
+
 
 # =========================================================================================
 num_sides = 7  
 radius = 18.5  
 center_x = 50.0
 center_y = 50.0 
-z_draw = -1.25 # EDIT
-z_clearance = 5.0  
+z_draw = -65.0 # EDIT
+z_clearance = -60.0  
 
 angles = np.linspace(np.pi / 2, np.pi / 2 + 2 * np.pi, num_sides, endpoint=False) # gets angles from formula
 vertices = [ # converts from polar to cartisan
@@ -112,6 +121,7 @@ ad_T = adjoint_map(Transform(H_ati2pentip[:3, :3], H_ati2pentip[:3, -1])).T
 RR_ati_cli = RRN.ConnectService("rr+tcp://localhost:59823?service=ati_sensor")
 ati = RR_ati_cli
 
+print(Htransform.__module__)
 tool_T_csv = Htransform(np.eye(3), Pft)
 np.savetxt("rig_pen.csv", tool_T_csv, delimiter=",")
 
