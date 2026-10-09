@@ -27,8 +27,8 @@ RR_ati_cli=RRN.ConnectService('rr+tcp://localhost:59823?service=ati_sensor')
 #########################################################Robot config parameters#########################################################
 #MAKE SURE THIS IS RIGHT
 #Measure the z and y displacement from the flange to the tool tip
-#Pft = np.array([-55.755, 0, 130.05])
-Pft = np.array([0, 0, 124.00])
+Pft = np.array([-55.755, 0, 130.05])
+#Pft = np.array([0, 0, 124.00])
 #186
 #Pft = np.array([0, 0, 148.64])
 #x to inside of pen holder: -49.55
@@ -62,30 +62,30 @@ controller_params = {
 #Make sure work object is in global
 #Smaller rig
 #Top is for regular holder
-#c1 = np.array([544.54, 67.66, 334.75])
+#c1 = np.array([446.54, 42.66, 351.75])
 #Bottom is for longer holder
 #c1 = np.array([604.54, 67.66, 334.75])  
 # # # # # # #bottom right --> Po, rig origin point
-#c2 = np.array([546.05, -17.5, 334.29])
+#c2 = np.array([513.05, -64.5, 351.29])
 #c2 = np.array([606.05, -17.5, 334.29])  
 # # # # # # #top left
-#c3 = np.array([645.41, 68.35, 331.02])
+#c3 = np.array([592.41, 43.35, 348.02])
 #c3 = np.array([705.41, 68.35, 331.02])
 # # # # # # #top right
-#c4 = np.array([646.78, -16.53, 330.79])
+#c4 = np.array([593.78, -41.53, 347.79])
 #c4 = np.array([706.78, -16.53, 330.79])
 
 #larger rig coord:
 #Top is for base holder
-#c1 = np.array([246.55, 107.4, 321.16])
+c1 = np.array([246.55, 107.4, 331.16])t
 #Bottom is for longer holder 
-c1 = np.array([292.55, 97.4, 366.16])
-#c2 = np.array([249.10, -42.84, 320.65])
-c2 = np.array([295.10, -52.84, 365.65]) 
-#c3 = np.array([397.67, 109.86, 320.52])
-c3 = np.array([353.67, 99.86, 365.52])
-#c4 = np.array([398.72, -39.88, 319.71])
-c4 = np.array([454.72, -59.88, 364.71])
+#c1 = np.array([292.55, 97.4, 366.16])
+c2 = np.array([249.10, -42.84, 330.65])
+#c2 = np.array([295.10, -52.84, 365.65]) 
+c3 = np.array([397.67, 109.86, 330.52])
+#c3 = np.array([353.67, 99.86, 365.52])
+c4 = np.array([398.72, -39.88, 329.71])
+#c4 = np.array([454.72, -59.88, 364.71])
 
 
 #Quaternion from teachpendant, base to flange
@@ -141,11 +141,11 @@ mctrl.start_egm()
 for corner in corners:
 	try:
 		#This is for the larger rig with the longer pen
-		z_offset = np.array([0, 0, 35])
+		#z_offset = np.array([0, 0, 35])
 		#This is for the smaller rig with the longer pen
 		#z_offset = np.array([0,0,40])
 		#This is for both rigs with the base holder
-		#z_offset = np.array([0,0,0])
+		z_offset = np.array([0,0,0])
 		corner_top= corner + 20*rig_pose[:3,-2] + z_offset 
 		corner_top_safe= corner + 80*rig_pose[:3,-2] + z_offset
 		print(corner_top)
