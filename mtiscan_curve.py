@@ -104,9 +104,9 @@ def load_waypoints_from_excel(filename, sheet_name, drawing_origin):
 
 
 # Robot setup
-# mti_client = RRN.ConnectService("rr+tcp://localhost:60830/?service=MTI2D")
-# mti_client.setExposureTime("25")
-mti_client = None
+mti_client = RRN.ConnectService("rr+tcp://localhost:60830/?service=MTI2D")
+mti_client.setExposureTime("25")
+# mti_client = None
 
 with open('ABB_1200_5_90_robot_default_config.yml', 'r') as file:
     robot = rr_rox.load_robot_info_yaml_to_robot(file)
@@ -240,8 +240,8 @@ egm_config = abb.EGMJointTargetConfig(mm, mm, mm, mm, mm, mm, 1000, 1000)
 mp = abb.MotionProgram(egm_config=egm_config)
 mp.EGMRunJoint(10, 0.05, 0.05)
 
-# client = abb.MotionProgramExecClient(base_url="http://192.168.60.101:80")
-client = abb.MotionProgramExecClient(base_url="http://127.0.0.1:80")
+client = abb.MotionProgramExecClient(base_url="http://192.168.60.101:80")
+# client = abb.MotionProgramExecClient(base_url="http://127.0.0.1:80")
 lognum = client.execute_motion_program(mp, wait=False)
 
 egm = EGM()
@@ -267,7 +267,7 @@ for i in range(len(fullruntraj_q)):
     current_EEpos = fwdkin(robot, read_q).p
     coordinates_in_rig_frame = Rbr.T @ (current_EEpos - Pbr)
 
-    #mti_recording.append(deepcopy(np.array([mti_client.lineProfile.X_data, mti_client.lineProfile.Z_data])))
+    mti_recording.append(deepcopy(np.array([mti_client.lineProfile.X_data, mti_client.lineProfile.Z_data])))
 
     EE_pos.append(coordinates_in_rig_frame)
     position_cmd(fullruntraj_q[i], egm)
