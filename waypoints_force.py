@@ -14,7 +14,7 @@ from robot_def import *
 from utils import *
  
 # USER SETTINGS 
-MODE = "real"          # "robotstudio" or "real"
+MODE = "robotstudio"          # "robotstudio" or "real"
 USE_FORCE_CONTROL = True      # False = just play the planned path (no z correction)
  
 ROBOTSTUDIO_URL = "http://127.0.0.1:80"
@@ -49,16 +49,16 @@ TIMESTEP = 0.004   # 4 ms EGM interval
  
 controller_params = {
     "force_ctrl_damping": 60.0,
-    "force_epsilon": 0.1,               
+    "force_epsilon": 0.1,         # below this = not touching
     "moveL_speed_lin": 6.0,
     "moveL_acc_lin": 7.2,
     "moveL_speed_ang": np.radians(10),
-    "trapzoid_slope": 1,                
-    "load_speed": 20.0,                 
+    "trapzoid_slope": 1,          # N/s force ramp after first contact
+    "load_speed": 5.0,            # mm/s descent speed until contact
     "unload_speed": 1.0,
     'settling_time': 0.2,
     "lookahead_time": 0.132,
-    "jogging_speed": 50,                
+    "jogging_speed": 50,
     "jogging_acc": 10,
     'force_filter_alpha': 0.9
 }
