@@ -7,57 +7,60 @@ from copy import deepcopy
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from RobotRaconteur.Client import *
 from general_robotics_toolbox import *
+
 sys.path.append('toolbox')
 sys.path.append('robot_motion')
 from robot_def import *
 from utils import *
+from RobotMotionController import *
 
-# USER SETTINGS
-MODE = "robotstudio"          # "robotstudio" or "real"
-USE_FORCE_CONTROL = True      
+if 'Htransform' not in globals():
+    def Htransform(R, p):
+        H = np.eye(4)
+        H[:3, :3] = R
+        H[:3, 3] = p
+        return H
 
-ROBOTSTUDIO_URL = "http://127.0.0.1:80"
-REAL_ROBOT_IP = '192.168.60.101'
-ATI_SERVICE_URL = 'rr+tcp://localhost:59823?service=ati_sensor'
+if 'H_from_RT' not in globals():
+    def H_from_RT(R, T):
+        return Htransform(R, T)
 
-filename = "bpp_triple_serpentine.xlsx"     # EDIT
-sheet_name = "line1"                        # EDIT
-drawing_origin = np.array([10.0, 10.0, 0.0])  # rig-frame mm: G-code (0,0,0) lands here. z=0 is the sheet surface
+# USER SETTINGS 
+filename = "bpp_triple_serpentine.xlsx"
+sheet_name = "line1"
+rigoffset = 0.0            # G-code x,y shift so the drawing sits inside the rig
 
-dlam_des = 0.07    # mm between planned points. Try not to set higher than 0.1, curves tend to disappear
-tool_vel = 2       # mm/s (polygon script draws at 2 mm/s)
-tool_acc = 2       # mm/s^2
+dlam_des = 0.07             # mm between planned points (keep <= 0.1)
+tool_vel = 2                # mm/s
+tool_acc = 2                # mm/s^2
+TIMESTEP = 0.004            # 4 ms EGM interval
 
-# Tool offset (flange -> pen tip). Should match what was used in calibration
+# MUST be the same tool offset that was used in zcalib.py when rig_pose.csv was made
 Pft = np.array([-55.755, 0, 130.05])
 
-# Force control (same values as the polygon script)
-FZ_DES = -1.0          # N desired pen-tip Z force. Negative = pressing down
-KF = 0.05              # force -> z gain (same as polygon script)
-Z_ENGAGE = 1.0         # mm: force control starts once planned z is at/below this height
-Z_START = 1.0          # mm: "just above sheet" height where we tare (same as polygon script)
-Z_MIN = -3.0           # mm: rig-frame z floor (same as polygon script)
-CONTACT_TOL = 0.1      # N: tolerance when first reaching the target force
-CONTACT_TIMEOUT = 15.0 # s: abort if target force is not reached
-FORCE_PROTECTION = 10  # real robot: torque magnitude abort limit (same as polygon script)
-FZ_ABORT = 10.0        # N: abort if |Fz| exceeds this (used in simulation)
+abb_robot_ip = '192.168.60.101'
+ATI_SERVICE_URL = 'rr+tcp://localhost:59823?service=ati_sensor'
 
-# Virtual sheet (RobotStudio only)
-SIM_SURFACE_Z = -0.30    # mm, rig-frame z where the pen first touches (0 = planned surface)
-SIM_STIFFNESS = 3.0      # N per mm of penetration
-SIM_NOISE = 0.01         # N, gaussian noise on the simulated sensor
-
-TIMESTEP = 0.004   # 4 ms EGM interval
+# Force control (same as polygon script)
+FZ_DES = -1.0
+KF = 0.05
+Z_ENGAGE = 1.0              # mm: force control starts when planned z <= this
+Z_START = 1.0               # mm: "just above sheet" height to tare at
+Z_MIN = -3.0                # mm: rig-frame z floor
+CONTACT_TOL = 0.1
+CONTACT_TIMEOUT = 15.0
+FORCE_PROTECTION = 10
 
 controller_params = {
     "force_ctrl_damping": 60.0,
-    "force_epsilon": 0.1,         # below this = not touching
+    "force_epsilon": 0.1,
     "moveL_speed_lin": 6.0,
     "moveL_acc_lin": 7.2,
     "moveL_speed_ang": np.radians(10),
-    "trapzoid_slope": 1,          # N/s force ramp after first contact
-    "load_speed": 5.0,            # mm/s descent speed until contact
+    "trapzoid_slope": 1,
+    "load_speed": 5.0,
     "unload_speed": 1.0,
     'settling_time': 0.2,
     "lookahead_time": 0.132,
@@ -66,51 +69,39 @@ controller_params = {
     'force_filter_alpha': 0.9
 }
 
-assert MODE in ("robotstudio", "real"), "MODE must be 'robotstudio' or 'real'"
-
-
-def Htransform(R, p):
-    H = np.eye(4)
-    H[:3, :3] = R
-    H[:3, 3] = p
-    return H
-
-
-def H_from_RT(R, T):
-    return Htransform(R, T)
-
-
-# Rig kinematics
-try:
-    rig_pose = np.loadtxt("rig_pose.csv", delimiter=',')
-except OSError:
-    if MODE == "real":
-        raise
-    print("WARNING: rig_pose.csv not found - using a default rig pose for RobotStudio testing")
-    rig_pose = Htransform(np.eye(3), np.array([400.0, -50.0, 300.0]))
-
+# Rig kinematics 
+final_rig_pose = np.loadtxt("rig_pose.csv", delimiter=',')
 z_theta = 2.0549 * np.pi / 180
-Rz = rot(rig_pose[0:3, 2], z_theta)
-Pbr = rig_pose[0:3, -1]
-Rbr = rig_pose[0:3, 0:3] @ Rz
-rig_T = Transform(Rbr, Pbr)   # rig frame -> base frame
+Rz = rot(final_rig_pose[0:3, 2], z_theta)
+Pbr = final_rig_pose[0:3, -1]
+Rbr = final_rig_pose[0:3, 0:3] @ Rz
+rig_T = Transform(Rbr, Pbr)
 
-# Robot model
+# Sensor, robot, controller 
+H_pentip2ati = np.loadtxt("probetip2ati.csv", delimiter=',')
+H_ati2pentip = np.linalg.inv(H_pentip2ati)
+ad_ati2pentip_T = adjoint_map(Transform(H_ati2pentip[:3, :3], H_ati2pentip[:3, -1])).T
+RR_ati_cli = RRN.ConnectService(ATI_SERVICE_URL)
+
 tool_T = Transform(np.eye(3), Pft)
 np.savetxt("rig_pen.csv", Htransform(np.eye(3), Pft), delimiter=',')
 robot = robot_obj('ABB_1200_5_90', "ABB_1200_5_90_robot_default_config.yml", tool_file_path="rig_pen.csv")
 robot.R_tool = tool_T.R
 robot.p_tool = tool_T.p
+print("Tool offset in use (must match zcalib.py):", Pft)
+
+mctrl = MotionController(robot, H_from_RT(Rbr, Pbr), H_pentip2ati, controller_params, TIMESTEP,
+                         FORCE_PROTECTION=FORCE_PROTECTION, RR_ati_cli=RR_ati_cli, abb_robot_ip=abb_robot_ip)
 
 
-# Path planning
-def plan_path(waypoints, dlam):
-    corner_R = np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]]).T   # pen pointing down (pi about y)
+# Path planning 
+def generate_robot_joints_along_path(waypoints):
+    corner_R = np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]]).T   # pen pointing down
     R_cmd = Rbr @ corner_R
 
     pts = []
     for i in range(len(waypoints) - 1):
-        n = int(np.linalg.norm(waypoints[i + 1] - waypoints[i]) / dlam) + 1
+        n = int(np.linalg.norm(waypoints[i + 1] - waypoints[i]) / dlam_des) + 1
         seg = np.linspace(waypoints[i], waypoints[i + 1], n)
         pts.extend(seg[:-1])
     pts.append(waypoints[-1])
@@ -120,7 +111,7 @@ def plan_path(waypoints, dlam):
     def solve(p, seed):
         sols = robot.inv(p, R_cmd, seed)
         if len(sols) == 0:
-            raise RuntimeError(f"No IK solution at {p} (is the point reachable?)")
+            raise RuntimeError(f"No IK solution at {p}")
         return sols[0]
 
     curve_js = [solve(p_base[0], np.zeros(6))]
@@ -129,7 +120,7 @@ def plan_path(waypoints, dlam):
             print(f"IK {i} out of {len(p_base)}")
         q = solve(p_base[i], curve_js[-1])
         assert np.linalg.norm(p_base[i] - robot.fwd(q).p) < 0.001, "The inverse kinematics gave a large error"
-        assert np.max(np.abs(q - curve_js[-1])) < 0.1, f"Joint jump at point {i} (possible configuration flip)"
+        assert np.max(np.abs(q - curve_js[-1])) < 0.1, f"Joint jump at point {i}"
         curve_js.append(q)
 
     lam = np.insert(np.cumsum(np.linalg.norm(np.diff(p_rig, axis=0), axis=1)), 0, 0)
@@ -144,7 +135,7 @@ def trapezoid_times(L, v, a, dt):
     d_a = v ** 2 / (2 * a)
     if L >= 2 * d_a:
         t_a, t_c, v_pk = v / a, (L - 2 * d_a) / v, v
-    else:                                    # too short to reach full speed: triangular profile
+    else:
         t_a, t_c = np.sqrt(L / a), 0.0
         v_pk = a * t_a
     T = 2 * t_a + t_c
@@ -163,195 +154,14 @@ def trajectory_generate(curve_js, p_rig, lam, lin_vel, lin_acc):
     return traj_q, traj_p, t
 
 
-# Backends
-class RealBackend:
-
-    def __init__(self):
-        import RobotRaconteur as RR
-        from RobotRaconteur.Client import RRN
-        from RobotMotionController import MotionController
-        self.RR = RR
-        H_pentip2ati = np.loadtxt("probetip2ati.csv", delimiter=',')
-        H_ati2pentip = np.linalg.inv(H_pentip2ati)
-        self.ad_T = adjoint_map(Transform(H_ati2pentip[:3, :3], H_ati2pentip[:3, -1])).T   # sensor wrench -> pen-tip wrench
-        RR_ati_cli = RRN.ConnectService(ATI_SERVICE_URL)
-        # rig pose passed to the controller includes the z correction, same as the polygon script
-        self.mctrl = MotionController(robot, H_from_RT(Rbr, Pbr), H_pentip2ati, controller_params, TIMESTEP,
-                                      FORCE_PROTECTION=FORCE_PROTECTION, RR_ati_cli=RR_ati_cli,
-                                      abb_robot_ip=REAL_ROBOT_IP)
-
-    def start(self):
-        self.mctrl.start_egm()
-
-    def stop(self):
-        self.mctrl.stop_egm()
-
-    def read_position(self):
-        state = None
-        for _ in range(20):
-            res, state = self.mctrl.egm.receive_from_robot(timeout=0.1)
-            if not res:
-                self.mctrl.stop_egm()
-                self.mctrl.start_egm()
-                print("Communication Lost, Reconnecting")
-            else:
-                break
-        return np.radians(state.joint_angles)
-
-    def position_cmd(self, q):
-        self.mctrl.egm.send_to_robot(np.degrees(q))
-
-    def jog(self, q, v):
-        self.mctrl.jog_joint_position_cmd(np.array(q), v=v)
-
-    def tare(self):
-        for _ in range(2):
-            time.sleep(0.1)
-            self.mctrl.RR_ati_cli.setf_param("set_tare", self.RR.VarValue(True, "bool"))
-        time.sleep(1.0)   # let the force filter settle
-        print("Tared. Force reading:", self.ad_T @ self.mctrl.ft_reading)
-
-    def read_fz(self):
-        ft_tip = self.ad_T @ self.mctrl.ft_reading
-        if np.linalg.norm(ft_tip[3:]) > self.mctrl.FORCE_PROTECTION:
-            raise RuntimeError(f"force too large: {ft_tip[3:]}")
-        if time.time() - self.mctrl.last_ft_time > 0.1:
-            raise RuntimeError("force reading lost")
-        return float(ft_tip[-1])
-
-    def force_ctrl(self, f_err):
-        return self.mctrl.force_impedence_ctrl(f_err)
-
-
-class SimBackend:
-    def __init__(self):
-        import abb_motion_program_exec as abb
-        from abb_robot_client.egm import EGM
-        self.abb = abb
-        self.EGM = EGM
-        mm = abb.egm_minmax(-1e-3, 1e-3)
-        self.egm_config = abb.EGMJointTargetConfig(mm, mm, mm, mm, mm, mm, 1000, 1000)
-        self.client = abb.MotionProgramExecClient(base_url=ROBOTSTUDIO_URL)
-        self.egm = None
-        self.q_last = None
-        self.rng = np.random.default_rng(0)
-
-    def _launch(self):
-        mp = self.abb.MotionProgram(egm_config=self.egm_config)
-        mp.EGMRunJoint(10, 0.05, 0.05)
-        self.client.execute_motion_program(mp, wait=False)
-
-    def start(self):
-        self._launch()
-        self.egm = self.EGM()
-        print("EGM is running (RobotStudio)")
-
-    def stop(self):
-        self.client.stop_egm()
-
-    def read_position(self):
-        for _ in range(20):
-            res, state = self.egm.receive_from_robot(timeout=0.1)
-            if res:
-                self.q_last = np.radians(state.joint_angles)
-                return self.q_last
-            print("Communication Lost, Reconnecting...")
-            self.client.stop_egm()
-            self.client.stop_motion_program()
-            self._launch()
-        raise RuntimeError("EGM communication lost")
-
-    def position_cmd(self, q):
-        self.egm.send_to_robot(np.degrees(q))
-
-    def jog(self, q_target, v):
-        q0 = self.read_position()
-        dq = np.asarray(q_target) - q0
-        dist = np.linalg.norm(robot.fwd(q_target).p - robot.fwd(q0).p)
-        T = max(dist / v, np.max(np.abs(dq)) / np.radians(30), 1.0)
-        n = int(T / TIMESTEP)
-        for k in range(1, n + 1):
-            alpha = 0.5 - 0.5 * np.cos(np.pi * k / n)
-            self.read_position()
-            self.position_cmd(q0 + alpha * dq)
-
-    def tare(self):
-        print("Simulation: no sensor to tare")
-
-    def read_fz(self):
-        z_tip = (Rbr.T @ (robot.fwd(self.q_last).p - Pbr))[2]
-        penetration = max(0.0, SIM_SURFACE_Z - z_tip)
-        fz = -SIM_STIFFNESS * penetration + self.rng.normal(0, SIM_NOISE)
-        if abs(fz) > FZ_ABORT:
-            raise RuntimeError(f"force too large: {fz:.2f} N")
-        return float(fz)
-
-    def force_ctrl(self, f_err):
-        # same as MotionController.force_impedence_ctrl: damping * force error
-        return controller_params["force_ctrl_damping"] * f_err
-
-
-# Force-control helpers (copied from the polygon script)
-def step(q_now, xy_cmd, dz=0.0, z_abs=None):
-    """Command one EGM step. x/y follow xy_cmd; z is the MEASURED tip z plus dz (or z_abs)."""
-    tip = deepcopy(rig_T.inv() * robot.fwd(q_now))
-    if z_abs is None:
-        tip.p[2] = max(tip.p[2] + dz, Z_MIN)
-    else:
-        tip.p[2] = z_abs
-    tip.p[:2] = xy_cmd
-    nxt = rig_T * tip
-    sols = robot.inv(nxt.p, nxt.R, q_now)
-    if len(sols) == 0:
-        raise RuntimeError("No IK solution for corrected point")
-    backend.position_cmd(sols[0])
-    return tip.p
-
-
-def log_sample(q, fz, fz_des, plan_z):
-    p_tip = Rbr.T @ (robot.fwd(q).p - Pbr)
-    t_log.append(time.time() - t_start)
-    fz_log.append(fz)
-    fzdes_log.append(fz_des)
-    zcorr_log.append(p_tip[2] - plan_z)
-    planz_log.append(plan_z)
-    EE_pos.append(p_tip)
-    q_log.append(np.degrees(q))
-
-
-def make_contact(xy, fz_target, plan_z):
-    """Hold x/y, descend until contact, then ramp force up to fz_target (same as polygon script)."""
-    p = controller_params
-    touch_t = None
-    t0 = time.time()
-    while True:
-        if time.time() - t0 > CONTACT_TIMEOUT:
-            raise RuntimeError("make_contact timed out")
-        q = backend.read_position()
-        fz = backend.read_fz()
-        if abs(fz) < p['force_epsilon'] and touch_t is None:
-            log_sample(q, fz, 0.0, plan_z)
-            step(q, xy, dz=-p['load_speed'] * TIMESTEP)                  # descend
-        else:
-            if touch_t is None:
-                touch_t = time.time()
-                print("contact made")
-            fz_ref = max(fz_target, -(time.time() - touch_t) * p['trapzoid_slope'])
-            log_sample(q, fz, fz_ref, plan_z)
-            dz = backend.force_ctrl(fz_ref - fz) * TIMESTEP * KF         # CONTROL FORCE
-            step(q, xy, dz)
-            if fz_ref == fz_target and abs(fz - fz_target) < CONTACT_TOL:
-                print("target force reached")
-                return
-
-
-# Build the path
 data = pd.read_excel(filename, sheet_name=sheet_name, header=None).to_numpy()
-waypoints = data[:, 0:3].astype(float) + drawing_origin
-np.savetxt("gcode_coordinates_new.csv", waypoints, delimiter=',')
+waypoints = data[:, 0:3].astype(float)
+waypoints[:, 0] += rigoffset
+waypoints[:, 1] += rigoffset
+np.savetxt("gcode_coordinates.csv", waypoints, delimiter=',')
 
 st = time.perf_counter()
-p_rig_plan, curve_js, lam_planned, R_cmd = plan_path(waypoints, dlam_des)
+p_rig_plan, curve_js, lam_planned, R_cmd = generate_robot_joints_along_path(waypoints)
 print(f"Planned {len(curve_js)} points, path length {lam_planned[-1]:.1f} mm, IK {time.perf_counter() - st:.1f} s")
 
 fullruntraj_q, traj_p_rig, fullruntime_bp = trajectory_generate(curve_js, p_rig_plan, lam_planned, tool_vel, tool_acc)
@@ -362,60 +172,139 @@ np.savetxt("fullruntime_bp.csv", fullruntime_bp, delimiter=',')
 np.savetxt("curve_js.csv", curve_js, delimiter=',')
 np.savetxt("lam_planned.csv", lam_planned, delimiter=',')
 np.savetxt("pos_check.csv", traj_p_rig, delimiter=',')
+print("Path data saved")
 
-# Execute
-backend = RealBackend() if MODE == "real" else SimBackend()
-print(f"Mode: {MODE}, force control: {USE_FORCE_CONTROL}")
 
-t_log, fz_log, fzdes_log, zcorr_log, planz_log, EE_pos, q_log = [], [], [], [], [], [], []
-aborted = False
+# Execution helpers 
+t_log, fz_log, fzdes_log, zoff_log, planz_log, EE_pos, q_log = [], [], [], [], [], [], []
 t_start = time.time()
 
+
+def read_position():
+    state = None
+    for _ in range(20):
+        res, state = mctrl.egm.receive_from_robot(timeout=0.1)
+        if not res:
+            mctrl.stop_egm()
+            mctrl.start_egm()
+            print("Communication Lost, Reconnecting")
+        else:
+            break
+    return np.radians(state.joint_angles)
+
+
+def position_cmd(q):
+    mctrl.egm.send_to_robot(np.degrees(q))
+
+
+def tare():
+    for _ in range(2):
+        time.sleep(0.1)
+        mctrl.RR_ati_cli.setf_param("set_tare", RR.VarValue(True, "bool"))
+    time.sleep(1.0)
+    print("Tared. Force reading:", ad_ati2pentip_T @ mctrl.ft_reading)
+
+
+def read_fz():
+    ft_tip = ad_ati2pentip_T @ mctrl.ft_reading
+    if np.linalg.norm(ft_tip[3:]) > mctrl.FORCE_PROTECTION:
+        raise RuntimeError(f"force too large: {ft_tip[3:]}")
+    if time.time() - mctrl.last_ft_time > 0.1:
+        raise RuntimeError("force reading lost")
+    return float(ft_tip[-1])
+
+
+def log_sample(q, fz, fz_des, plan_z):
+    p_tip = Rbr.T @ (robot.fwd(q).p - Pbr)
+    t_log.append(time.time() - t_start)
+    fz_log.append(fz)
+    fzdes_log.append(fz_des)
+    zoff_log.append(p_tip[2] - plan_z)
+    planz_log.append(plan_z)
+    EE_pos.append(p_tip)
+    q_log.append(np.degrees(q))
+
+
+def step(q_now, xy_cmd, dz=0.0):
+    tip = deepcopy(rig_T.inv() * robot.fwd(q_now))
+    tip.p[2] = max(tip.p[2] + dz, Z_MIN)
+    tip.p[:2] = xy_cmd
+    nxt = rig_T * tip
+    sols = robot.inv(nxt.p, nxt.R, q_now)
+    if len(sols) == 0:
+        raise RuntimeError("No IK solution for corrected point")
+    position_cmd(sols[0])
+
+
+def make_contact(xy, fz_target, plan_z):
+    p = controller_params
+    touch_t = None
+    t0 = time.time()
+    while True:
+        if time.time() - t0 > CONTACT_TIMEOUT:
+            raise RuntimeError("make_contact timed out")
+        q = read_position()
+        fz = read_fz()
+        if abs(fz) < p['force_epsilon'] and touch_t is None:
+            log_sample(q, fz, 0.0, plan_z)
+            step(q, xy, dz=-p['load_speed'] * TIMESTEP)
+        else:
+            if touch_t is None:
+                touch_t = time.time()
+                print("contact made")
+            fz_ref = max(fz_target, -(time.time() - touch_t) * p['trapzoid_slope'])
+            log_sample(q, fz, fz_ref, plan_z)
+            dz = mctrl.force_impedence_ctrl(fz_ref - fz) * TIMESTEP * KF
+            step(q, xy, dz)
+            if fz_ref == fz_target and abs(fz - fz_target) < CONTACT_TOL:
+                print("target force reached")
+                return
+
+
+# Execute 
+aborted = False
 print("Starting EGM...")
-backend.start()
+mctrl.start_egm()
 
 try:
-    # Go to the first point of the path (already at hover height from the G-code)
-    backend.jog(curve_js[0], controller_params["jogging_speed"])
-    if MODE == "real":
-        input("At start (hovering). Press Enter...")
+    # Jog to the first planned point (hover height from the G-code)
+    mctrl.jog_joint_position_cmd(curve_js[0], v=controller_params["jogging_speed"])
+    input("At start (hovering). Press Enter...")
 
-    # Like the polygon script: if the path starts on the sheet, go just above it before taring
-    if USE_FORCE_CONTROL and traj_p_rig[0, 2] <= Z_ENGAGE:
+    # If the path starts on the sheet, go just above it before taring
+    if traj_p_rig[0, 2] <= Z_ENGAGE:
         p_above = traj_p_rig[0].copy()
         p_above[2] = Z_START
-        q_above = robot.inv(Rbr @ p_above + Pbr, R_cmd, backend.read_position())[0]
-        backend.jog(q_above, controller_params["jogging_speed"])
-        if MODE == "real":
-            input("Just above sheet. Press Enter to tare and make contact...")
-    backend.tare()
+        q_above = robot.inv(Rbr @ p_above + Pbr, R_cmd, read_position())[0]
+        mctrl.jog_joint_position_cmd(q_above, v=controller_params["jogging_speed"])
+        input("Just above sheet. Press Enter to tare and make contact...")
+    tare()
 
-    in_contact = False   # True from touchdown until the pen is retracted
+    in_contact = False
     t_start = time.time()
 
     for i in range(len(fullruntraj_q)):
         p_rig = traj_p_rig[i]
 
-        if USE_FORCE_CONTROL and p_rig[2] <= Z_ENGAGE:
-            # Touch down and ramp to the target force (path paused), like make_contact in the polygon script
+        if p_rig[2] <= Z_ENGAGE:
             if not in_contact:
+                # re-tare right before descending (pen is stationary here)
+                tare()
                 make_contact(p_rig[:2], FZ_DES, p_rig[2])
                 in_contact = True
-            # Draw: read force, control force, x/y follow the plan (same as draw_edge in the polygon script)
-            read_q = backend.read_position()
-            fz_now = backend.read_fz()                                   # READ FORCE
-            dz = backend.force_ctrl(FZ_DES - fz_now) * TIMESTEP * KF     # CONTROL FORCE
+            read_q = read_position()
+            fz_now = read_fz()
+            dz = mctrl.force_impedence_ctrl(FZ_DES - fz_now) * TIMESTEP * KF
             log_sample(read_q, fz_now, FZ_DES, p_rig[2])
             step(read_q, p_rig[:2], dz)
         else:
             if in_contact:
-                # Retract with a jog back onto the planned path (same idea as the polygon script's retract)
-                backend.jog(fullruntraj_q[i], controller_params["jogging_speed"])
+                mctrl.jog_joint_position_cmd(fullruntraj_q[i], v=controller_params["jogging_speed"])
                 in_contact = False
-            read_q = backend.read_position()
-            fz_now = backend.read_fz()
+            read_q = read_position()
+            fz_now = read_fz()
             log_sample(read_q, fz_now, 0.0, p_rig[2])
-            backend.position_cmd(fullruntraj_q[i])
+            position_cmd(fullruntraj_q[i])
 
     print("Drawing complete.")
 
@@ -426,39 +315,37 @@ except (Exception, KeyboardInterrupt) as e:
 
 finally:
     if aborted:
-        try:   # lift straight up off the sheet
-            q_now = backend.read_position()
+        try:
+            q_now = read_position()
             tip = robot.fwd(q_now)
             q_lift = robot.inv(tip.p + 10 * Rbr[:, 2], tip.R, q_now)[0]
-            backend.jog(q_lift, controller_params["jogging_speed"])
+            mctrl.jog_joint_position_cmd(q_lift, v=controller_params["jogging_speed"])
             print("Aborted - pen lifted.")
         except Exception as e2:
             print("Could not lift pen:", e2)
     try:
-        backend.stop()
+        mctrl.stop_egm()
     except Exception as e:
         print("stop_egm warning:", e)
 
-# Save + plot
+# Save + plot 
 if len(fz_log) == 0:
     print("No data Recorded")
 else:
-    t_log = np.array(t_log)
-    fz_log = np.array(fz_log)
-    fzdes_log = np.array(fzdes_log)
-    zcorr_log = np.array(zcorr_log)
-    EE_pos = np.array(EE_pos)
-    q_log = np.array(q_log)
+    t_arr = np.array(t_log)
+    fz_arr = np.array(fz_log)
+    EE_arr = np.array(EE_pos)
+    q_arr = np.array(q_log)
 
-    np.savetxt("FTData.csv", np.column_stack([t_log, fz_log, fzdes_log, zcorr_log]), delimiter=',')
-    np.savetxt("JointData.csv", np.column_stack([t_log, q_log]), delimiter=',')
-    np.savetxt("path_force.csv", np.column_stack([t_log, fz_log, EE_pos]), delimiter=',')
-    np.savetxt("curvejsexedata.csv", np.radians(q_log), delimiter=',')
+    np.savetxt("FTData.csv", np.column_stack([t_arr, fz_arr, fzdes_log, zoff_log]), delimiter=',')
+    np.savetxt("JointData.csv", np.column_stack([t_arr, q_arr]), delimiter=',')
+    np.savetxt("path_force.csv", np.column_stack([t_arr, fz_arr, EE_arr]), delimiter=',')
+    np.savetxt("curvejsexedata.csv", np.radians(q_arr), delimiter=',')
     print("Data saved!")
 
     plt.figure()
-    plt.plot(t_log, fz_log, label="measured Fz" if MODE == "real" else "simulated Fz")
-    plt.plot(t_log, fzdes_log, '--', label="desired Fz")
+    plt.plot(t_arr, fz_arr, label="measured Fz")
+    plt.plot(t_arr, fzdes_log, '--', label="desired Fz")
     plt.xlabel("Time (s)")
     plt.ylabel("Force Z (N)")
     plt.title("Force vs Time")
@@ -466,10 +353,8 @@ else:
     plt.grid(True)
 
     plt.figure()
-    plt.plot(t_log, EE_pos[:, 2], label="tip z (rig frame)")
-    plt.plot(t_log, planz_log, '--', label="planned z")
-    if MODE == "robotstudio":
-        plt.axhline(SIM_SURFACE_Z, color='k', linestyle=':', label="virtual sheet")
+    plt.plot(t_arr, EE_arr[:, 2], label="tip z (rig frame)")
+    plt.plot(t_arr, planz_log, '--', label="planned z")
     plt.xlabel("Time (s)")
     plt.ylabel("Z (mm)")
     plt.title("Pen z vs Time")
@@ -477,17 +362,10 @@ else:
     plt.grid(True)
 
     plt.figure()
-    plt.plot(t_log, zcorr_log)
-    plt.xlabel("Time (s)")
-    plt.ylabel("tip z - planned z (mm)")
-    plt.title("Z offset from plan")
-    plt.grid(True)
-
-    plt.figure()
-    sc = plt.scatter(EE_pos[:, 0], EE_pos[:, 1], c=fz_log, cmap="viridis", s=5)
+    sc = plt.scatter(EE_arr[:, 0], EE_arr[:, 1], c=fz_arr, cmap="viridis", s=5)
     plt.colorbar(sc, label="Force Z (N)")
-    plt.xlabel("X Position (mm)")
-    plt.ylabel("Y Position (mm)")
+    plt.xlabel("X (mm)")
+    plt.ylabel("Y (mm)")
     plt.title("Executed Path (colored by force)")
     plt.axis("equal")
     plt.grid(True)
