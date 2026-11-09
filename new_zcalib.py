@@ -17,7 +17,7 @@ from RobotMotionController import *
 
 
 # Load in a JSON file, create new one for every new tool
-CONFIG_FILE = "tool_config.json"
+CONFIG_FILE = "pen_mount_side.json"
 print(f"Loading configuration from {CONFIG_FILE}...")
 
 with open(CONFIG_FILE, "r") as f:
