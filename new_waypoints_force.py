@@ -135,6 +135,15 @@ def generate_robot_joints_along_path(waypoints):
     p_base = (Rbr @ p_rig.T).T + Pbr
 
     def solve(p, seed):
+        print("Position: ", p)
+        print("Position shape: ", np.shape(p))
+        
+        print("Orientation: ", R_cmd)
+        print("Orientation Shape: ", np.shape(R_cmd))
+        
+        print("Seed: ", seed)
+        print("Seed shape: ", np.shape(seed))
+        
         sols = robot.inv(p, R_cmd, seed)
         if len(sols) == 0:
             raise RuntimeError(f"No IK solution at {p}")
@@ -144,6 +153,16 @@ def generate_robot_joints_along_path(waypoints):
     for i in range(1, len(p_base)):
         if i % 20000 == 0:
             print(f"IK {i} out of {len(p_base)}")
+        
+        print(f"\nSolving wapoint {i}")
+        print(f"Target position: {p_base[i]}")
+        print("Previous join configuration: {curve_js[-1]}")
+            
+        print("theta_v: ", theta_v)
+        print("theta_v_shape: ", np.shape(theta_v))
+        print("last_joints: ", last_joints)
+        print("last_joints shape: ", np.shape(last_joints))
+        
         q = solve(p_base[i], curve_js[-1])
         assert np.linalg.norm(p_base[i] - robot.fwd(q).p) < 0.001, "The inverse kinematics gave a large error"
         assert np.max(np.abs(q - curve_js[-1])) < 0.1, f"Joint jump at point {i}"
